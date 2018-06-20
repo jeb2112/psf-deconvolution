@@ -1,0 +1,31 @@
+function [roll_off] = roll_off_filter(sizes, steps, starts, weight, maxslope);
+%sizes  :  (Nx, Nphi)   dimensions of image
+%steps  :  (sx, sphi)   voxel size in x and l dimensions
+%starts :  (cx, cphi)   centre of 0,0 voxel
+
+roll_off = zeros(sizes(1),sizes(2));
+% evaluate each voxel
+for j =1:sizes(2) % for each angular frequency
+  for i=1:sizes(1)   % for each detector spatial frequency
+%    phi = starts(2) + j*steps(2);
+    phi = starts(2) - sizes(2)/2*steps(2) + j*steps(2);
+%    rx = starts(1) + i*steps(1);
+    rx  = (-sizes(1)/2+i)/(steps(1)*sizes(1));
+    
+    if (abs(rx) > 1e-9)
+      %l = -phi/rx   % convert slope to depth changed to positive
+      l = phi/rx; 
+      %print l
+      if (l <= 0)
+        roll_off(i,j) = 1.0;
+      elseif ( l < weight)
+        roll_off(i,j) = cos(pi/2.0*abs(l)/weight)^2;
+%      else
+%        roll_off(i,j) = 0.0;
+      end
+%    else
+%      roll_off(i,j) = 0.0;
+    end
+  end
+end
+return

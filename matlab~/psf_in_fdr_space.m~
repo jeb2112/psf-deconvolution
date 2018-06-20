@@ -1,0 +1,108 @@
+function [h,hinv] = psf_in_fdr_space(sizes, steps, starts, zoomdata, psf, psf_starts,psf_steps,psf_sizes,zoompsf);
+%    compute the psf in FDR space where the latter has coordinates of spatial frequency and angular frequency
+
+%   sizes  :  (Nx, Nphi)   dimensions of image
+%   steps  :  (sx, sphi)   voxel size in x and l dimensions
+%   starts :  (cx, cphi)   centre of 0,0 voxel
+%   psf    :  ArrayVolume specifying psf
+
+% alloc array
+h = zeros(sizes(1), sizes(2));
+zero_offset = size(psf,2)/2;
+
+% scale the zoomed psf measurement according to eq 2 in the patent
+% guessing values for the various parameters
+lamda=473e-9;
+nbath=1.33;
+e=7.4e-6;
+% new custom-built opt
+zoomedNA=[0.501 6.328e-3;
+                0.907 0.011;
+                1.0   0.012;
+                1.361 0.017;
+                2.038 0.025;
+                2.871 0.036;
+                5.101 0.062;
+                5.5   0.067];
+
+% former bioptonics
+%zoomedNA = [ 0.80  0.0125; 1.00  0.0155;
+%                    1.30  0.0180;
+%                    1.60  0.0225;
+%                    2.00  0.0270;
+%                    2.50  0.0320;
+%                    3.20  0.0390;
+%                    4.00  0.0465;
+%                    5.00  0.0505;
+%                    6.30  0.0620;
+%                    8.00  0.0625;
+%                    10.0  0.0625  ];
+NApsf=interp1(zoomedNA(:,1),zoomedNA(:,2),zoompsf);
+NAdata=interp1(zoomedNA(:,1),zoomedNA(:,2),zoomdata);
+DOFpsf=(nbath*(lamda/NApsf^2+e/zoompsf/NApsf));
+DOFdata=(nbath*(lamda/NAdata^2+e/zoomdata/NAdata));
+lscale=DOFdata/DOFpsf;
+% since nobody is providing the position of the focal plane either, guess 
+% a value as 1/2 the DOF of the experiment, converting from metres to mm
+pfp=DOFdata/2 * 1000;
+% from the shape of the bowtie, ga sample data seem to have pfp near zero
+pfp=0;
+
+% compute fft of psf along detector element dimension (x)
+Rx_psf = fftshift(fft(fftshift((psf(:,:)),2),[],2) ,2);
+% calculate R (Fourier space) coord
+Rx_values = ([-zero_offset+1:psf_sizes(2)-zero_offset]+0.5)/(psf_steps(2)*psf_sizes(2)); 
+% calculate the l coord, scale it to the brain dataset, and offset by the pfp
+l_values = (psf_starts(3) + [1:psf_sizes(3)]*psf_steps(3))*lscale + pfp;
+
+figure(1),subplot(1,3,2),imagesc(Rx_values', l_values',abs(Rx_psf),[0 2]);
+xlabel('R (1/mm)');
+ylabel('distance from focal plane (mm)');
+title('psf in l,R space');
+
+% generate matrices from the coordinate arrays for bilinear interp
+[l_values,Rx_values]=meshgrid(l_values,Rx_values);
+
+for j=1:sizes(2)  % for each angular frequency
+  for i=1:sizes(1)  % for each detector spatial frequency
+
+% these coords are calculated in Fourier space, not sinogram space
+% it has to be in Fourier space in order to get units of 
+% mm for l. 
+    Phi(i,j) = ( - sizes(2)/2+j)/(steps(2)*sizes(2));
+    Rx(i,j)  = (-sizes(1)/2+i+0.5)/(steps(1)*sizes(1));
+    l(i,j) = -Phi(i,j)/Rx(i,j);
+  end
+end
+lmax=DOFdata*1000*1.5;
+lmin=-DOFdata*1000/1.5;
+
+h = interp2(l_values, Rx_values,Rx_psf.',l, Rx,'linear');
+hinv = 1./h;
+
+% a filter to smooth off the sharp edges of the nullspace at the lmax/lmin 
+% cutoff points, while also preserving a small part of the nullspace 
+% (ie the "vee") very close to the origin where there looks to be more 
+% than just noise, since we also know the FDR is only an approximation 
+% to begin with.
+
+% some hardcoded cutoff values for defining the region of origin preservation
+% need to parameterize these later.
+Pmin=-1; % 1/rad
+Rmin=2; % 1/mm
+% generate the cutoff line P(Rx) as a piecewise constant line in Phi,R space,
+% and smooth the vertices a little bit
+clear P;
+for i=1:sizes(1) 
+  P(i)=-Rx(i)*lmax ./(1+exp(-(Rx(i)-Rmin))) + Pmin / (1+exp(-(Rmin-Rx(i)))) + Pmin / (1+exp(Rx(i)+Rmin))   + -Rx(i)*lmin ./ (1+exp((Rx(i)+Rmin)));
+end
+% map that line to a Phi-based sigmoidal roll off function
+P=repmat(P,[sizes(2) 1]);
+sg=1./(1+exp(-(Phi-P')));
+% generate correct values for the other half of Phi,R space by a 
+% reflection symmetry argument.
+sg(:,end/2+1:end)=flipud(fliplr(sg(:,1:end/2)));
+
+h = h.* sg ;
+hinv = hinv .* sg;
+
